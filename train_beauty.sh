@@ -1,7 +1,4 @@
-#!/bin/bash
-
 CUDA_VISIBLE_DEVICES=0 python main.py \
-    --model=DiffAR \
     --category=Beauty \
     --lr=0.01 \
     --temperature=0.03 \
