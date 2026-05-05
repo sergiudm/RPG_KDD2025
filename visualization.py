@@ -144,15 +144,118 @@ def parse_log_file(log_path):
     return results
 
 
-def plot_all_results(log_dir="logs/AmazonReviews2014/RPG", model=None):
+def plot_single_result(results, output_dir, model=None):
+    """
+    Create a visualization for a single dataset.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    fig = plt.figure(figsize=(14, 10))
+
+    color_primary = "#2E86AB"
+    color_secondary = "#A23B72"
+
+    # 1. Training Loss Over Epochs (Top Left)
+    ax1 = plt.subplot(2, 2, 1)
+    if results["train_losses"] and results["epochs"]:
+        ax1.plot(
+            results["epochs"],
+            results["train_losses"],
+            color=color_primary,
+            linewidth=2,
+            marker="o",
+            markersize=3,
+        )
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Training Loss")
+    ax1.set_title("Training Loss Over Epochs", fontweight="bold", fontsize=12)
+    ax1.grid(True, alpha=0.3)
+
+    # 2. Validation NDCG (Top Right)
+    ax2 = plt.subplot(2, 2, 2)
+    if results["val_metrics"]["ndcg@5"]:
+        epochs = list(range(1, len(results["val_metrics"]["ndcg@5"]) + 1))
+        ax2.plot(epochs, results["val_metrics"]["ndcg@5"], label="NDCG@5", color=color_primary, linewidth=2, marker="o", markersize=3)
+    if results["val_metrics"]["ndcg@10"]:
+        epochs = list(range(1, len(results["val_metrics"]["ndcg@10"]) + 1))
+        ax2.plot(epochs, results["val_metrics"]["ndcg@10"], label="NDCG@10", color=color_secondary, linewidth=2, marker="s", markersize=3)
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("NDCG")
+    ax2.set_title("Validation NDCG Over Epochs", fontweight="bold", fontsize=12)
+    ax2.legend(loc="best", fontsize=9)
+    ax2.grid(True, alpha=0.3)
+
+    # 3. Validation Recall (Bottom Left)
+    ax3 = plt.subplot(2, 2, 3)
+    if results["val_metrics"]["recall@5"]:
+        epochs = list(range(1, len(results["val_metrics"]["recall@5"]) + 1))
+        ax3.plot(epochs, results["val_metrics"]["recall@5"], label="Recall@5", color=color_primary, linewidth=2, marker="o", markersize=3)
+    if results["val_metrics"]["recall@10"]:
+        epochs = list(range(1, len(results["val_metrics"]["recall@10"]) + 1))
+        ax3.plot(epochs, results["val_metrics"]["recall@10"], label="Recall@10", color=color_secondary, linewidth=2, marker="s", markersize=3)
+    ax3.set_xlabel("Epoch")
+    ax3.set_ylabel("Recall")
+    ax3.set_title("Validation Recall Over Epochs", fontweight="bold", fontsize=12)
+    ax3.legend(loc="best", fontsize=9)
+    ax3.grid(True, alpha=0.3)
+
+    # 4. Info Panel (Bottom Right)
+    ax4 = plt.subplot(2, 2, 4)
+    ax4.axis("off")
+
+    info_text = f"Dataset: {results['dataset']}\n\n"
+    info_text += "Hyperparameters:\n"
+    for param, value in results["hyperparams"].items():
+        info_text += f"  {param}: {value}\n"
+
+    if results["best_epoch"] is not None:
+        info_text += f"\nBest epoch: {results['best_epoch']}\n"
+        info_text += f"Best val score: {results['best_val_score']:.6f}\n"
+
+    if results["test_results"]:
+        info_text += "\nTest Results:\n"
+        for metric, value in results["test_results"].items():
+            info_text += f"  {metric}: {value:.6f}\n"
+
+    ax4.text(
+        0.05,
+        0.95,
+        info_text,
+        transform=ax4.transAxes,
+        fontsize=10,
+        verticalalignment="top",
+        fontfamily="monospace",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+    )
+
+    fig.suptitle(
+        f"{model} — {results['dataset']}",
+        fontsize=14,
+        fontweight="bold",
+        y=0.995,
+    )
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.99])
+
+    output_path = os.path.join(output_dir, "results_visualization.pdf")
+    plt.savefig(output_path, bbox_inches="tight")
+    print(f"  Saved individual PDF: {output_path}")
+    plt.close(fig)
+
+
+def plot_all_results(log_paths, output_dir, model=None):
     """
     Create a comprehensive visualization of all experiment results.
     """
-    # Find all log files
-    log_files = glob.glob(os.path.join(log_dir, "*.log"))
+    log_files = []
+    for path in log_paths:
+        if os.path.isfile(path):
+            log_files.append(path)
+        elif os.path.isdir(path):
+            log_files.extend(glob.glob(os.path.join(path, "*.log")))
 
     if not log_files:
-        print(f"No log files found in {log_dir}")
+        print("No log files found in the provided paths")
         return
 
     print(f"Found {len(log_files)} log files")
@@ -422,16 +525,11 @@ def plot_all_results(log_dir="logs/AmazonReviews2014/RPG", model=None):
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.99])
 
-    # Save figure
-    os.makedirs(args.output_dir, exist_ok=True)
-    output_path = f"{args.output_dir}/results_visualization.png"
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    print(f"\nVisualization saved to: {output_path}")
-
     # Also save as PDF for better quality
-    output_path_pdf = f"{args.output_dir}/results_visualization.pdf"
+    output_path_pdf = f"{output_dir}/results_visualization.pdf"
+    os.makedirs(output_dir, exist_ok=True)
     plt.savefig(output_path_pdf, bbox_inches="tight")
-    print(f"Visualization also saved to: {output_path_pdf}")
+    print(f"Visualization saved to: {output_path_pdf}")
 
     # Print summary statistics
     print("\n" + "=" * 60)
@@ -449,25 +547,76 @@ def plot_all_results(log_dir="logs/AmazonReviews2014/RPG", model=None):
                 print(f"    {metric}: {value:.6f}")
 
 
+def extract_metadata_from_filename(filepath):
+    """Extract model, category, and timestamp from a log filename."""
+    filename = os.path.basename(filepath)
+    model_m = re.search(r"--model=([^_]+)", filename)
+    cat_m = re.search(r"--category=([^_]+(?:_and_[^_]+)*)", filename)
+    time_m = re.search(
+        r"-([A-Z][a-z]{2}-\d{2}-\d{4}_\d{2}-\d{2}(?:-[a-z0-9]+)?)\.log", filename
+    )
+    model = model_m.group(1) if model_m else "UnknownModel"
+    category = cat_m.group(1) if cat_m else "UnknownCategory"
+    timestamp = time_m.group(1) if time_m else "UnknownTime"
+    return model, category, timestamp
+
+
 if __name__ == "__main__":
-    model = "DiffAR"
     import argparse
 
     parser = argparse.ArgumentParser(description="Visualize RPG experiment results")
     parser.add_argument(
-        "--log_dir",
-        type=str,
-        default=f"logs/AmazonReviews2014/{model}/Apr-26-2026_12-16",
-        help="Directory containing log files",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default=f"results_visualization/{model}/Apr-26-2026_12-16",
-        help="Directory to save visualization",
+        "--log_dirs",
+        nargs="+",
+        default=[
+            "logs/AmazonReviews2014/DiffAR/genrec_default-main.py_--model=DiffAR_--category=Toys_and_Games_--lr=0.003_--temperature=0.03-May-05-2026_18-52-833a9d.log",
+            "logs/AmazonReviews2014/DiffAR/genrec_default-main.py_--model=DiffAR_--category=Sports_and_Outdoors_--lr=0.003_--temperature=0.03-May-05-2026_18-53-91572e.log",
+            "logs/AmazonReviews2014/DiffAR/genrec_default-main.py_--model=DiffAR_--category=CDs_and_Vinyl_--lr=0.001_--temperature=0.03-May-05-2026_18-53-2eeead.log",
+            "logs/AmazonReviews2014/DiffAR/genrec_default-main.py_--model=DiffAR_--category=Beauty_--lr=0.01_--temperature=0.03_--n_codebook=32_--num_beams=20_--n_edges=200_--propagation_steps=3-May-05-2026_18-31-d5929c.log",
+        ],
+        help="List of full paths to the log files (or directories)",
     )
 
     args = parser.parse_args()
 
-    plot_all_results(args.log_dir, model)
-    plt.show()
+    # Resolve log files (files or directories)
+    log_files = []
+    for path in args.log_dirs:
+        if os.path.isfile(path):
+            log_files.append(path)
+        elif os.path.isdir(path):
+            log_files.extend(glob.glob(os.path.join(path, "*.log")))
+
+    if not log_files:
+        print("No log files found in the provided paths")
+        exit(1)
+
+    print(f"Found {len(log_files)} log files")
+
+    # Determine model from first log file
+    model, _, _ = extract_metadata_from_filename(log_files[0])
+
+    # Step 1: Generate individual per-dataset PDFs
+    all_results = []
+    for log_file in sorted(log_files):
+        print(f"Processing {os.path.basename(log_file)}...")
+        results = parse_log_file(log_file)
+        if results["dataset"]:
+            all_results.append(results)
+            mdl, cat, ts = extract_metadata_from_filename(log_file)
+            individual_output_dir = os.path.join("vis_results", mdl, cat, ts)
+            plot_single_result(results, individual_output_dir, model=mdl)
+
+    if not all_results:
+        print("No valid results found")
+        exit(1)
+
+    # Step 2: Generate combined comparison PDF
+    first_ts = None
+    for log_file in sorted(log_files):
+        _, _, ts = extract_metadata_from_filename(log_file)
+        first_ts = ts
+        break
+
+    combined_output_dir = os.path.join("vis_results", model, f"combined_{first_ts}")
+    plot_all_results(log_files, combined_output_dir, model)
