@@ -5,7 +5,6 @@ import math
 
 from genrec.models.diffusion import create_diffusion
 from genrec.models.diffusion import create_rectified_flow
-from genrec.timing import TimingMonitor
 
 
 class DiffLoss(nn.Module):
@@ -62,8 +61,6 @@ class DiffLoss(nn.Module):
             )
         self.num_sampling_steps = num_sampling_steps
 
-        # Add timing monitor for performance profiling
-        self.timing_monitor = TimingMonitor()
 
     def _sample_noise(self, z, batch_size):
         return torch.randn(
@@ -106,7 +103,6 @@ class DiffLoss(nn.Module):
         return loss.mean()
 
     def sample(self, z, temperature=1.0, cfg=1.0):
-        self.timing_monitor.start("sample_setup")
         if self.use_rectified_flow:
             # Rectified flow sampling
             if not cfg == 1.0:
@@ -129,10 +125,7 @@ class DiffLoss(nn.Module):
                 noise = self._sample_noise(z, z.shape[0])
                 model_kwargs = dict(c=z)
                 sample_fn = self.net.forward
-        self.timing_monitor.end("sample_setup")
 
-        # Time the actual sampling process
-        self.timing_monitor.start("sampling_process")
         if self.use_rectified_flow:
             # Use ODE solver for rectified flow
             sampled_token_latent = self.gen_diffusion.sample_ode(
@@ -154,7 +147,6 @@ class DiffLoss(nn.Module):
                 progress=False,
                 temperature=temperature,
             )
-        self.timing_monitor.end("sampling_process")
 
         return sampled_token_latent
 

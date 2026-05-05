@@ -5,7 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
-import math
 import json
 import hashlib
 import numpy as np
@@ -24,7 +23,7 @@ class DiffARTokenizer(AbstractTokenizer):
         self.user2id = dataset.user2id
         self.id2item = dataset.id_mapping["id2item"]
         self.sent_embs = self._init_tokenizer(dataset)
-
+        self.item2tokens = self.sent_embs
         self.REGENERATE_SAMPLE = False
         self.ignored_label = -100
 
@@ -69,48 +68,6 @@ class DiffARTokenizer(AbstractTokenizer):
                 show_progress_bar=True,
                 device=self.config["device"],
             )
-        elif "text-embedding-3" in self.config["sent_emb_model"]:
-            from openai import OpenAI
-
-            client = OpenAI(api_key=self.config["openai_api_key"])
-
-            sent_embs = []
-            for i in tqdm(
-                range(0, len(meta_sentences), self.config["sent_emb_batch_size"]),
-                desc="Encoding",
-            ):
-                try:
-                    responses = client.embeddings.create(
-                        input=meta_sentences[
-                            i : i + self.config["sent_emb_batch_size"]
-                        ],
-                        model=self.config["sent_emb_model"],
-                    )
-                except:
-                    self.log(
-                        f"[TOKENIZER] Failed to encode sentence embeddings for {i} - {i + self.config['sent_emb_batch_size']}"
-                    )
-                    batch = meta_sentences[i : i + self.config["sent_emb_batch_size"]]
-
-                    from genrec.utils import num_tokens_from_string
-
-                    new_batch = []
-                    for sent in batch:
-                        n_tokens = num_tokens_from_string(sent, "cl100k_base")
-                        if n_tokens < 8192:
-                            new_batch.append(sent)
-                        else:
-                            n_chars = 8192 / n_tokens * len(sent) - 100
-                            new_batch.append(sent[: int(n_chars)])
-
-                    self.log(f"[TOKENIZER] Retrying with {len(new_batch)} sentences")
-                    responses = client.embeddings.create(
-                        input=new_batch, model=self.config["sent_emb_model"]
-                    )
-
-                for response in responses.data:
-                    sent_embs.append(response.embedding)
-            sent_embs = np.array(sent_embs, dtype=np.float32)
 
         sent_embs.tofile(output_path)
         return sent_embs
@@ -205,11 +162,11 @@ class DiffARTokenizer(AbstractTokenizer):
                 -1, self.config["sent_emb_dim"]
             )
         else:
-            self.log(f"[TOKENIZER] Encoding sentence embeddings...")
+            self.log("[TOKENIZER] Encoding sentence embeddings...")
             sent_embs = self._encode_sent_emb(dataset, sent_emb_path)
 
         # PCA/statistics are fit on training items only to avoid val/test leakage.
-        self.log(f"[TOKENIZER] Applying PCA to sentence embeddings...")
+        self.log("[TOKENIZER] Applying PCA to sentence embeddings...")
 
         train_mask = self._get_items_for_training(dataset)
         sent_embs = self._fit_transform_sentence_embeddings(sent_embs, train_mask)
@@ -383,7 +340,7 @@ class DiffARTokenizer(AbstractTokenizer):
                 )
 
         # 如果没有缓存，进行tokenization
-        self.log(f"[TOKENIZER] Tokenizing datasets...")
+        self.log("[TOKENIZER] Tokenizing datasets...")
         tokenized_datasets = {}
         for split in datasets:
             tokenized_datasets[split] = self._tokenize_split(datasets[split], split)

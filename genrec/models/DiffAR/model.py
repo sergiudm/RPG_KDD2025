@@ -13,7 +13,6 @@ from genrec.dataset import AbstractDataset
 from genrec.model import AbstractModel
 from genrec.tokenizer import AbstractTokenizer
 from genrec.models.diffusion.diffloss import DiffLoss
-from genrec.timing import TimingMonitor
 
 
 # gpt2是pre-norm架构
@@ -106,8 +105,6 @@ class DiffAR(AbstractModel):
         else:
             self.loss_mse = torch.nn.MSELoss()
 
-        # Add timing monitor for performance profiling
-        self.timing_monitor = TimingMonitor()
 
     def _map_item_embs(self) -> torch.Tensor:
         """
@@ -213,12 +210,8 @@ class DiffAR(AbstractModel):
 
     def generate(self, batch, n_return_sequences=1):
         # Time the forward pass
-        self.timing_monitor.start("model_forward")
         outputs = self.forward(batch, return_loss=False)  # [B N D]
-        self.timing_monitor.end("model_forward")
 
-        # Time the last token extraction
-        self.timing_monitor.start("last_token_extraction")
         # last token of the sequence
         out_embd = (
             self.hidden_embd
@@ -231,22 +224,15 @@ class DiffAR(AbstractModel):
             .view(-1, 1, 1)
             .expand(-1, 1, out_embd),  # [B] -> [B 1 1] -> [B 1 D]
         ).squeeze(dim=1)
-        self.timing_monitor.end("last_token_extraction")
 
         # Time the diffusion sampling
         if self.use_diffloss and self.use_diffusion_generation:
-            self.timing_monitor.start("diffusion_sampling")
             z = last_pred  # [B D] D-hidden
             last_pred = self.diffloss.sample(z, self.diff_temperature, cfg=1.0)
-            self.timing_monitor.end("diffusion_sampling")
         elif self.use_rank_loss:
             last_pred = self.rank_proj(last_pred)  # [B D] D-feat
 
-        # Time the similarity calculation
-        self.timing_monitor.start("similarity_calculation")
         item_logits = self._item_similarity_logits(last_pred)  # [B n_items]
         preds = item_logits.topk(n_return_sequences, dim=-1).indices + 1
-
-        self.timing_monitor.end("similarity_calculation")
 
         return preds.unsqueeze(-1)  # [B topk 1]
