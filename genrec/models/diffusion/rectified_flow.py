@@ -119,47 +119,18 @@ class RectifiedFlow:
         Returns:
             Generated samples
         """
-        if model_kwargs is None:
-            model_kwargs = {}
-
-        if noise is not None:
-            img = noise
-        else:
-            img = torch.randn(*shape).to(device)
-
         if num_sampling_steps is None:
             num_sampling_steps = self.num_timesteps
-
-        # Create timesteps for sampling (reverse order)
-        timesteps = torch.linspace(
-            self.num_timesteps - 1,
-            0,
-            num_sampling_steps,
-            dtype=torch.long,
+        return self.sample_ode(
+            model=model,
+            shape=shape,
+            solver="euler",
+            num_steps=num_sampling_steps,
+            model_kwargs=model_kwargs,
             device=device,
+            noise=noise,
+            progress=progress,
         )
-
-        if progress:
-            from tqdm.auto import tqdm
-
-            timesteps = tqdm(timesteps)
-
-        # Sample using Euler method
-        for i, t in enumerate(timesteps[:-1]):
-            t_next = timesteps[i + 1]
-            dt = (t_next - t).float() / (self.num_timesteps - 1)
-
-            # Predict velocity
-            with torch.no_grad():
-                t_tensor = torch.full(
-                    (img.shape[0],), t, device=device, dtype=torch.long
-                )
-                velocity = model(img, t_tensor, **model_kwargs)
-
-            # Euler step: x_{t+1} = x_t + dt * velocity
-            img = img + dt * velocity
-
-        return img
 
     def p_mean_variance(
         self,
@@ -209,6 +180,8 @@ class RectifiedFlow:
         num_steps: int = 50,
         model_kwargs: Optional[Dict[str, Any]] = None,
         device: Optional[torch.device] = None,
+        noise: Optional[torch.Tensor] = None,
+        progress: bool = False,
     ) -> torch.Tensor:
         """
         Generate samples using different ODE solvers.
@@ -220,27 +193,60 @@ class RectifiedFlow:
             num_steps: Number of steps for the ODE solver
             model_kwargs: Additional model arguments for conditioning
             device: Device to generate on
+            noise: Optional initial noise. If None, standard Gaussian noise is used.
+            progress: Whether to show progress
 
         Returns:
             Generated samples
         """
         if model_kwargs is None:
             model_kwargs = {}
+        if num_steps < 2:
+            raise ValueError("num_steps must be at least 2 for ODE sampling.")
 
-        # Start from noise
-        x = torch.randn(*shape).to(device)
+        if noise is not None:
+            x = noise
+        else:
+            if device is None:
+                device = torch.device("cpu")
+            x = torch.randn(*shape, device=device)
 
         # Time points from 1 to 0 (reverse process)
-        timesteps = torch.linspace(1, 0, num_steps, device=device)
+        timesteps = torch.linspace(
+            1.0,
+            0.0,
+            num_steps,
+            device=x.device,
+            dtype=torch.float32,
+        )
 
         if solver == "euler":
-            return self._euler_solver(model, x, timesteps, model_kwargs)
+            return self._euler_solver(model, x, timesteps, model_kwargs, progress)
         elif solver == "midpoint":
-            return self._midpoint_solver(model, x, timesteps, model_kwargs)
+            return self._midpoint_solver(model, x, timesteps, model_kwargs, progress)
         elif solver == "rk4":
-            return self._rk4_solver(model, x, timesteps, model_kwargs)
+            return self._rk4_solver(model, x, timesteps, model_kwargs, progress)
         else:
             raise ValueError(f"Unknown solver: {solver}")
+
+    def _discrete_timestep(
+        self,
+        t: torch.Tensor,
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        t_discrete = torch.round(t * (self.num_timesteps - 1))
+        t_discrete = t_discrete.clamp(0, self.num_timesteps - 1).long()
+        return t_discrete.expand(batch_size).to(device=device)
+
+    @staticmethod
+    def _step_range(timesteps: torch.Tensor, progress: bool):
+        steps = range(len(timesteps) - 1)
+        if progress:
+            from tqdm.auto import tqdm
+
+            return tqdm(steps)
+        return steps
 
     def _euler_solver(
         self,
@@ -248,16 +254,16 @@ class RectifiedFlow:
         x: torch.Tensor,
         timesteps: torch.Tensor,
         model_kwargs: Dict[str, Any],
+        progress: bool = False,
     ) -> torch.Tensor:
         """Euler method for ODE solving."""
-        for i in range(len(timesteps) - 1):
+        for i in self._step_range(timesteps, progress):
             t = timesteps[i]
             t_next = timesteps[i + 1]
-            dt = t_next - t
+            dt = (t_next - t).to(dtype=x.dtype)
 
             # Convert to discrete timestep for model
-            t_discrete = (t * (self.num_timesteps - 1)).long()
-            t_tensor = torch.full((x.shape[0],), t_discrete, device=x.device)
+            t_tensor = self._discrete_timestep(t, x.shape[0], x.device)
 
             with torch.no_grad():
                 velocity = model(x, t_tensor, **model_kwargs)
@@ -273,6 +279,7 @@ class RectifiedFlow:
         x: torch.Tensor,
         timesteps: torch.Tensor,
         model_kwargs: Dict[str, Any],
+        progress: bool = False,
     ) -> torch.Tensor:
         """
         Midpoint method (2nd order Runge-Kutta) for ODE solving.
@@ -286,23 +293,23 @@ class RectifiedFlow:
         Returns:
             Final state tensor after ODE integration
         """
-        for i in range(len(timesteps) - 1):
+        for i in self._step_range(timesteps, progress):
             t = timesteps[i]
             t_next = timesteps[i + 1]
-            dt = t_next - t
+            dt = (t_next - t).to(dtype=x.dtype)
 
             # Convert to discrete timestep for model
-            t_discrete = (t * (self.num_timesteps - 1)).long()
-            t_tensor = torch.full((x.shape[0],), t_discrete, device=x.device)
+            t_tensor = self._discrete_timestep(t, x.shape[0], x.device)
 
             with torch.no_grad():
                 # k1: slope at current point
                 k1 = model(x, t_tensor, **model_kwargs)
 
                 # Calculate midpoint
-                t_mid_discrete = ((t + dt / 2) * (self.num_timesteps - 1)).long()
-                t_mid_tensor = torch.full(
-                    (x.shape[0],), t_mid_discrete, device=x.device
+                t_mid_tensor = self._discrete_timestep(
+                    t + dt / 2,
+                    x.shape[0],
+                    x.device,
                 )
                 x_mid = x + dt / 2 * k1
 
@@ -320,31 +327,28 @@ class RectifiedFlow:
         x: torch.Tensor,
         timesteps: torch.Tensor,
         model_kwargs: Dict[str, Any],
+        progress: bool = False,
     ) -> torch.Tensor:
         """Runge-Kutta 4th order method for ODE solving."""
-        for i in range(len(timesteps) - 1):
+        for i in self._step_range(timesteps, progress):
             t = timesteps[i]
             t_next = timesteps[i + 1]
-            dt = t_next - t
+            dt = (t_next - t).to(dtype=x.dtype)
 
             # Convert to discrete timestep for model
-            t_discrete = (t * (self.num_timesteps - 1)).long()
-            t_tensor = torch.full((x.shape[0],), t_discrete, device=x.device)
+            t_tensor = self._discrete_timestep(t, x.shape[0], x.device)
 
             with torch.no_grad():
                 # RK4 steps
                 k1 = model(x, t_tensor, **model_kwargs)
 
-                t2_discrete = ((t + dt / 2) * (self.num_timesteps - 1)).long()
-                t2_tensor = torch.full((x.shape[0],), t2_discrete, device=x.device)
+                t2_tensor = self._discrete_timestep(t + dt / 2, x.shape[0], x.device)
                 k2 = model(x + dt / 2 * k1, t2_tensor, **model_kwargs)
 
-                t3_discrete = ((t + dt / 2) * (self.num_timesteps - 1)).long()
-                t3_tensor = torch.full((x.shape[0],), t3_discrete, device=x.device)
+                t3_tensor = self._discrete_timestep(t + dt / 2, x.shape[0], x.device)
                 k3 = model(x + dt / 2 * k2, t3_tensor, **model_kwargs)
 
-                t4_discrete = ((t + dt) * (self.num_timesteps - 1)).long()
-                t4_tensor = torch.full((x.shape[0],), t4_discrete, device=x.device)
+                t4_tensor = self._discrete_timestep(t + dt, x.shape[0], x.device)
                 k4 = model(x + dt * k3, t4_tensor, **model_kwargs)
 
                 # RK4 update

@@ -30,7 +30,7 @@ tiger_knn_metric: inner_product
 # Diffusion
 diffloss_w: 1024
 diffloss_d: 3
-num_sampling_steps: 100
+num_sampling_steps: 20
 diffusion_batch_mul: 1
 diff_temperature: 1.0
 grad_checkpointing: False
@@ -40,6 +40,6 @@ tiger_uncond_prob: 0.1
 tiger_guidance_weight: 0.0
 
 # Rectified Flow configs
-use_rectified_flow: False
+use_rectified_flow: True
 rectified_flow_steps: 1000
 ode_solver: "euler"

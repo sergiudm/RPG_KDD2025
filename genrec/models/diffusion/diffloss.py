@@ -50,7 +50,9 @@ class DiffLoss(nn.Module):
             self.train_diffusion = create_rectified_flow(
                 num_timesteps=rectified_flow_steps
             )
-            self.gen_diffusion = create_rectified_flow(num_timesteps=num_sampling_steps)
+            self.gen_diffusion = create_rectified_flow(
+                num_timesteps=rectified_flow_steps
+            )
         else:
             # Use existing gaussian diffusion
             self.train_diffusion = create_diffusion(
@@ -106,6 +108,8 @@ class DiffLoss(nn.Module):
         if self.use_rectified_flow:
             # Rectified flow sampling
             if not cfg == 1.0:
+                if z.shape[0] % 2 != 0:
+                    raise ValueError("CFG sampling requires an even batch size.")
                 noise = self._sample_noise(z, z.shape[0] // 2)
                 noise = torch.cat([noise, noise], dim=0)
                 model_kwargs = dict(c=z, cfg_scale=cfg)
@@ -114,9 +118,12 @@ class DiffLoss(nn.Module):
                 noise = self._sample_noise(z, z.shape[0])
                 model_kwargs = dict(c=z)
                 sample_fn = self.net.forward
+            noise = noise * temperature
         else:
             # Original gaussian diffusion sampling
             if not cfg == 1.0:
+                if z.shape[0] % 2 != 0:
+                    raise ValueError("CFG sampling requires an even batch size.")
                 noise = self._sample_noise(z, z.shape[0] // 2)
                 noise = torch.cat([noise, noise], dim=0)
                 model_kwargs = dict(c=z, cfg_scale=cfg)
@@ -135,6 +142,7 @@ class DiffLoss(nn.Module):
                 model_kwargs=model_kwargs,
                 num_steps=self.num_sampling_steps,
                 device=noise.device,
+                noise=noise,
             )
         else:
             # Original gaussian diffusion sampling
