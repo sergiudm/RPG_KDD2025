@@ -1,5 +1,9 @@
-CUDA_VISIBLE_DEVICES=4 python main.py \
+CUDA_VISIBLE_DEVICES=0 python main.py \
     --model=RPGDiff \
     --category=Toys_and_Games \
     --lr=0.003 \
     --temperature=0.03 \
+    --n_codebook=16 \
+    --num_beams=200 \
+    --n_edges=20 \
+    --propagation_steps=3

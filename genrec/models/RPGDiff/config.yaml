@@ -45,7 +45,7 @@ chunk_size: 1024
 num_workers: 64
 
 # RPGDiff configs
-diff_alpha: 0.05
+diff_alpha: 0.5
 diff_warmup_steps: 10000
 diffusion_batch_mul: 1
 diffloss_w: 1024
@@ -57,3 +57,12 @@ grad_checkpointing: False
 use_rectified_flow: False
 rectified_flow_steps: 1000
 ode_solver: "euler"
+
+# Diffusion reranker configs
+use_diffusion_reranker: False
+diff_rerank_candidate_size: 200
+diff_rerank_beta: 0.2
+diff_rerank_score_norm: True
+diff_sample_temperature: 0.7
+diff_score_temperature: 0.03
+diff_condition_source: continuous
