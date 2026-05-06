@@ -1,0 +1,9 @@
+CUDA_VISIBLE_DEVICES=2 python main.py \
+    --model=RPG \
+    --category=CDs_and_Vinyl \
+    --lr=0.001 \
+    --temperature=0.03 \
+    --n_codebook=64 \
+    --num_beams=20 \
+    --n_edges=500 \
+    --propagation_steps=5

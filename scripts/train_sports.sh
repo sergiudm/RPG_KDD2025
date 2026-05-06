@@ -1,0 +1,9 @@
+CUDA_VISIBLE_DEVICES=1 python main.py \
+    --model=RPG \
+    --category=Sports_and_Outdoors \
+    --lr=0.003 \
+    --temperature=0.03 \
+    --n_codebook=16 \
+    --num_beams=100 \
+    --n_edges=30 \
+    --propagation_steps=5

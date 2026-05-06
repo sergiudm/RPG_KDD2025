@@ -1,0 +1,9 @@
+CUDA_VISIBLE_DEVICES=3 python main.py \
+    --model=RPG \
+    --category=Toys_and_Games \
+    --lr=0.003 \
+    --temperature=0.03 \
+    --n_codebook=16 \
+    --num_beams=200 \
+    --n_edges=20 \
+    --propagation_steps=3

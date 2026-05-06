@@ -566,13 +566,18 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Visualize RPG experiment results")
     parser.add_argument(
-        "--log_dirs",
+        "--log_paths",
         nargs="+",
         default=[
-            "logs/AmazonReviews2014/DiffAR/genrec_default-main.py_--model=DiffAR_--category=Toys_and_Games_--lr=0.003_--temperature=0.03-May-05-2026_18-52-833a9d.log",
-            "logs/AmazonReviews2014/DiffAR/genrec_default-main.py_--model=DiffAR_--category=Sports_and_Outdoors_--lr=0.003_--temperature=0.03-May-05-2026_18-53-91572e.log",
-            "logs/AmazonReviews2014/DiffAR/genrec_default-main.py_--model=DiffAR_--category=CDs_and_Vinyl_--lr=0.001_--temperature=0.03-May-05-2026_18-53-2eeead.log",
-            "logs/AmazonReviews2014/DiffAR/genrec_default-main.py_--model=DiffAR_--category=Beauty_--lr=0.01_--temperature=0.03_--n_codebook=32_--num_beams=20_--n_edges=200_--propagation_steps=3-May-05-2026_18-31-d5929c.log",
+            # "logs/AmazonReviews2014/DiffAR/genrec_default-main.py_--model=DiffAR_--category=Toys_and_Games_--lr=0.003_--temperature=0.03-May-05-2026_18-52-833a9d.log",
+            # "logs/AmazonReviews2014/DiffAR/genrec_default-main.py_--model=DiffAR_--category=Sports_and_Outdoors_--lr=0.003_--temperature=0.03-May-05-2026_18-53-91572e.log",
+            # "logs/AmazonReviews2014/DiffAR/genrec_default-main.py_--model=DiffAR_--category=CDs_and_Vinyl_--lr=0.001_--temperature=0.03-May-05-2026_18-53-2eeead.log",
+            # "logs/AmazonReviews2014/DiffAR/genrec_default-main.py_--model=DiffAR_--category=Beauty_--lr=0.01_--temperature=0.03_--n_codebook=32_--num_beams=20_--n_edges=200_--propagation_steps=3-May-05-2026_18-31-d5929c.log",
+            # "logs/AmazonReviews2014/RPG/genrec_default-main.py_--category=Beauty_--lr=0.01_--temperature=0.03_--n_codebook=32_--num_beams=20_--n_edges=200_--propagation_steps=3-Apr-27-2026_20-30-ba460a.log"
+            # # "logs/AmazonReviews2014/RPG/genrec_default-main.py_--category=CDs_and_Vinyl_--lr=0.001_--temperature=0.03_--n_codebook=64_--num_beams=20_--n_edges=500_--propagation_steps=5-May-06-2026_01-21-70824e.log",
+            # "logs/AmazonReviews2014/RPG/genrec_default-main.py_--category=Sports_and_Outdoors_--lr=0.003_--temperature=0.03_--n_codebook=16_--num_beams=100_--n_edges=30_--propagation_steps=5-May-06-2026_01-21-52057a.log",
+            # "logs/AmazonReviews2014/RPG/genrec_default-main.py_--category=Toys_and_Games_--lr=0.003_--temperature=0.03_--n_codebook=16_--num_beams=200_--n_edges=20_--propagation_steps=3-May-06-2026_01-22-2b595c.log",
+            "logs/AmazonReviews2014/RPGDiff"
         ],
         help="List of full paths to the log files (or directories)",
     )
@@ -581,7 +586,7 @@ if __name__ == "__main__":
 
     # Resolve log files (files or directories)
     log_files = []
-    for path in args.log_dirs:
+    for path in args.log_paths:
         if os.path.isfile(path):
             log_files.append(path)
         elif os.path.isdir(path):
