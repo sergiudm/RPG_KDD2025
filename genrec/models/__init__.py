@@ -7,3 +7,4 @@
 from genrec.models.RPG.model import RPG
 from genrec.models.DiffAR.model import DiffAR
 from genrec.models.RPGDiff.model import RPGDiff
+from genrec.models.TigerDiff.model import TigerDiff
