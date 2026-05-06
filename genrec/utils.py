@@ -64,14 +64,35 @@ def get_command_line_args_str():
     return '_'.join(sys.argv).replace('/', '|')
 
 
+def _truncate_middle(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+    if max_len <= 8:
+        return text[:max_len]
+
+    keep_len = max_len - 1
+    head_len = keep_len // 2
+    tail_len = keep_len - head_len
+    return f"{text[:head_len]}~{text[-tail_len:]}"
+
+
 def get_file_name(config: dict, suffix: str = ''):
     config_str = "".join([str(value) for key, value in config.items() if key != 'accelerator'])
     md5 = hashlib.md5(config_str.encode(encoding="utf-8")).hexdigest()[:6]
     command_line_args = get_command_line_args_str()
-    logfilename = "{}-{}-{}-{}{}".format(
-        config["run_id"], command_line_args, config['run_local_time'], md5, suffix
+    max_len = int(config.get("file_name_max_len", 180))
+    suffix = str(suffix)
+    fixed_tail = "-{}-{}{}".format(config['run_local_time'], md5, suffix)
+    run_prefix = "{}-".format(config["run_id"])
+    max_command_len = max_len - len(run_prefix) - len(fixed_tail)
+    if max_command_len < 16:
+        run_prefix = "{}-".format(_truncate_middle(str(config["run_id"]), 32))
+        max_command_len = max_len - len(run_prefix) - len(fixed_tail)
+    command_line_args = _truncate_middle(command_line_args, max(16, max_command_len))
+    filename = "{}{}{}".format(
+        run_prefix, command_line_args, fixed_tail
     )
-    return logfilename
+    return _truncate_middle(filename, max_len)
 
 
 def init_logger(config: dict):
@@ -83,8 +104,6 @@ def init_logger(config: dict):
     os.makedirs(model_name, exist_ok=True)
 
     logfilename = get_file_name(config, suffix='.log')
-    if len(logfilename) > 255:
-        logfilename = logfilename[:245] + logfilename[-10:]
     logfilepath = os.path.join(LOGROOT, config["dataset"], config["model"], logfilename)
 
     filefmt = "%(asctime)-15s %(levelname)s  %(message)s"
