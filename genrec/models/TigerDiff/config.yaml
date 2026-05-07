@@ -10,8 +10,8 @@ sent_emb_batch_size: 512
 
 # Config for the history encoder
 max_item_seq_len: 50
-n_embd: 448
-n_layer: 2
+n_embd: 512
+n_layer: 4
 n_head: 4
 n_inner: 1024
 activation_function: gelu_new
@@ -25,7 +25,7 @@ weight_decay: 0.01
 # KNN scoring over generated oracle item embeddings.
 # DreamRec reports inner-product KNN at evaluation time.
 temperature: 0.07
-tiger_knn_metric: inner_product
+tiger_knn_metric: cosine
 
 # Diffusion
 diffloss_w: 1024
@@ -37,7 +37,7 @@ grad_checkpointing: False
 tiger_uncond_prob: 0.1
 # Paper-style classifier-free guidance weight w.
 # w=0 disables extra guidance; sampling passes cfg_scale=(1+w) to DiffLoss.
-tiger_guidance_weight: 0.0
+tiger_guidance_weight: 2.0
 
 # Rectified Flow configs
 use_rectified_flow: True
