@@ -487,6 +487,19 @@ def init_device():
     else:
         return torch.device('cpu'), use_ddp
 
+
+def _make_loggable(value):
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, list):
+        return [_make_loggable(v) for v in value]
+    if isinstance(value, tuple):
+        return [_make_loggable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _make_loggable(v) for k, v in value.items()}
+    return str(value)
+
+
 def config_for_log(config: dict) -> dict:
     config = config.copy()
     config.pop('device', None)
@@ -495,6 +508,19 @@ def config_for_log(config: dict) -> dict:
         if isinstance(v, list):
             config[k] = str(v)
     return config
+
+
+def format_hyper_parameters(config: dict) -> str:
+    loggable_config = {
+        key: _make_loggable(value)
+        for key, value in sorted(config.items())
+        if key != 'accelerator'
+    }
+    return yaml.safe_dump(
+        loggable_config,
+        sort_keys=True,
+        default_flow_style=False,
+    ).rstrip()
 
 
 def num_tokens_from_string(string: str, encoding_name: str) -> int:

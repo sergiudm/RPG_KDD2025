@@ -15,7 +15,8 @@ from genrec.dataset import AbstractDataset
 from genrec.model import AbstractModel
 from genrec.tokenizer import AbstractTokenizer
 from genrec.utils import get_config, init_seed, init_logger, init_device, \
-    get_dataset, get_tokenizer, get_model, get_trainer, log
+    get_dataset, get_tokenizer, get_model, get_trainer, log, \
+    format_hyper_parameters
 
 
 class Pipeline:
@@ -52,6 +53,7 @@ class Pipeline:
         init_seed(self.config['rand_seed'], self.config['reproducibility'])
         init_logger(self.config)
         self.logger = getLogger()
+        self.log(f'Hyper Parameters:\n{format_hyper_parameters(self.config)}')
         self.log(f'Device: {self.config["device"]}')
 
         # Dataset
