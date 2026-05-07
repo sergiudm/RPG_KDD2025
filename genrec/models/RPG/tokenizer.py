@@ -7,6 +7,7 @@
 import os
 import math
 import json
+import hashlib
 import numpy as np
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
@@ -228,6 +229,26 @@ class RPGTokenizer(AbstractTokenizer):
         with open(sem_ids_path, 'w') as f:
             json.dump(item2sem_ids, f)
 
+    def _semantic_id_cache_path(self, dataset: AbstractDataset) -> str:
+        cache_config = {
+            'cache_version': 2,
+            'tokenizer': self.__class__.__name__,
+            'metadata': self.config.get('metadata'),
+            'sent_emb_model': self.config.get('sent_emb_model'),
+            'sent_emb_dim': self.config.get('sent_emb_dim'),
+            'sent_emb_pca': int(self.config.get('sent_emb_pca', 0)),
+            'pca_fit_source': 'all_items',
+            'index_factory': self.index_factory,
+            'opq_train_source': 'training_items',
+        }
+        cache_key = hashlib.md5(
+            json.dumps(cache_config, sort_keys=True).encode('utf-8')
+        ).hexdigest()[:10]
+        return os.path.join(
+            dataset.cache_dir, 'processed',
+            f'{os.path.basename(self.config["sent_emb_model"])}_{self.index_factory}_{cache_key}.sem_ids'
+        )
+
     def _sem_ids_to_tokens(self, item2sem_ids: dict) -> dict:
         """
         Converts semantic IDs to tokens.
@@ -257,10 +278,7 @@ class RPGTokenizer(AbstractTokenizer):
             dict: A dictionary mapping items to semantic IDs.
         """
         # Load semantic IDs
-        sem_ids_path = os.path.join(
-            dataset.cache_dir, 'processed',
-            f'{os.path.basename(self.config["sent_emb_model"])}_{self.index_factory}.sem_ids'
-        )
+        sem_ids_path = self._semantic_id_cache_path(dataset)
 
         if not os.path.exists(sem_ids_path):
             # Load or encode sentence embeddings
