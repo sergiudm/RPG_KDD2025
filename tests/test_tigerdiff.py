@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from genrec.models import TigerDiff
+from genrec.models.TigerDiff.model import TigerSequenceEncoder
 
 
 class DummyDataset:
@@ -63,6 +64,21 @@ def make_batch():
 
 
 class TigerDiffTest(unittest.TestCase):
+    def test_uses_local_encoder_and_learned_position_embeddings(self):
+        torch.manual_seed(0)
+        model = TigerDiff(make_config(), DummyDataset(), DummyTokenizer())
+        model.eval()
+
+        self.assertIsInstance(model.encoder, TigerSequenceEncoder)
+        self.assertIsInstance(model.position_emb, torch.nn.Embedding)
+
+        batch = make_batch()
+        batch["input_ids"] = torch.tensor([[1, 1, 0, 0]])
+        with torch.no_grad():
+            encoded, _ = model._encode_history(batch)
+
+        self.assertFalse(torch.allclose(encoded[:, 0], encoded[:, 1]))
+
     def test_forward_uses_last_valid_label_for_diffusion_target(self):
         torch.manual_seed(0)
         model = TigerDiff(make_config(), DummyDataset(), DummyTokenizer())

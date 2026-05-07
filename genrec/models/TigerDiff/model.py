@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import math
 from types import SimpleNamespace
 
 import torch
@@ -26,6 +27,146 @@ class InputProj(nn.Module):
         return self.norm(self.linear(x))
 
 
+def _activation_module(name: str) -> nn.Module:
+    if name == "relu":
+        return nn.ReLU()
+    return nn.GELU()
+
+
+class TigerSelfAttention(nn.Module):
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        attn_dropout: float,
+        resid_dropout: float,
+    ):
+        super().__init__()
+        if hidden_size % num_heads != 0:
+            raise ValueError("n_embd must be divisible by n_head.")
+
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+        self.scale = 1.0 / math.sqrt(self.head_dim)
+
+        self.qkv = nn.Linear(hidden_size, hidden_size * 3)
+        self.out_proj = nn.Linear(hidden_size, hidden_size)
+        self.attn_dropout = nn.Dropout(attn_dropout)
+        self.resid_dropout = nn.Dropout(resid_dropout)
+
+    def forward(
+        self, hidden_states: torch.Tensor, attention_mask: torch.Tensor
+    ) -> torch.Tensor:
+        batch_size, seq_len, _ = hidden_states.shape
+        qkv = self.qkv(hidden_states)
+        qkv = qkv.view(
+            batch_size,
+            seq_len,
+            3,
+            self.num_heads,
+            self.head_dim,
+        )
+        qkv = qkv.permute(2, 0, 3, 1, 4)
+        query, key, value = qkv.unbind(dim=0)
+
+        attn_scores = torch.matmul(query, key.transpose(-2, -1)) * self.scale
+        key_mask = attention_mask[:, None, None, :].bool()
+        attn_scores = attn_scores.masked_fill(
+            ~key_mask,
+            torch.finfo(attn_scores.dtype).min,
+        )
+        attn_probs = torch.softmax(attn_scores, dim=-1)
+        attn_probs = attn_probs.masked_fill(~key_mask, 0.0)
+        attn_probs = self.attn_dropout(attn_probs)
+
+        context = torch.matmul(attn_probs, value)
+        context = context.transpose(1, 2).contiguous()
+        context = context.view(batch_size, seq_len, self.hidden_size)
+        context = self.out_proj(context)
+        return self.resid_dropout(context)
+
+
+class TigerSequenceEncoderLayer(nn.Module):
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        inner_size: int,
+        activation_name: str,
+        attn_dropout: float,
+        dropout: float,
+        layer_norm_eps: float,
+    ):
+        super().__init__()
+        self.self_attn = TigerSelfAttention(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            attn_dropout=attn_dropout,
+            resid_dropout=dropout,
+        )
+        self.attn_norm = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
+        self.ffn_norm = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_size, inner_size),
+            _activation_module(activation_name),
+            nn.Dropout(dropout),
+            nn.Linear(inner_size, hidden_size),
+            nn.Dropout(dropout),
+        )
+
+    def forward(
+        self, hidden_states: torch.Tensor, attention_mask: torch.Tensor
+    ) -> torch.Tensor:
+        hidden_states = hidden_states + self.self_attn(
+            self.attn_norm(hidden_states),
+            attention_mask,
+        )
+        hidden_states = hidden_states + self.ffn(self.ffn_norm(hidden_states))
+        return hidden_states * attention_mask.unsqueeze(-1).to(hidden_states.dtype)
+
+
+class TigerSequenceEncoder(nn.Module):
+    def __init__(
+        self,
+        hidden_size: int,
+        num_layers: int,
+        num_heads: int,
+        inner_size: int,
+        activation_name: str,
+        attn_dropout: float,
+        dropout: float,
+        layer_norm_eps: float,
+    ):
+        super().__init__()
+        self.layers = nn.ModuleList(
+            [
+                TigerSequenceEncoderLayer(
+                    hidden_size=hidden_size,
+                    num_heads=num_heads,
+                    inner_size=inner_size,
+                    activation_name=activation_name,
+                    attn_dropout=attn_dropout,
+                    dropout=dropout,
+                    layer_norm_eps=layer_norm_eps,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+        self.norm = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
+
+    def forward(
+        self, hidden_states: torch.Tensor, attention_mask: torch.Tensor
+    ) -> torch.Tensor:
+        hidden_states = hidden_states * attention_mask.unsqueeze(-1).to(
+            hidden_states.dtype
+        )
+        for layer in self.layers:
+            hidden_states = layer(hidden_states, attention_mask)
+        hidden_states = self.norm(hidden_states)
+        return hidden_states * attention_mask.unsqueeze(-1).to(hidden_states.dtype)
+
+
 class TigerDiff(AbstractModel):
     def __init__(
         self, config: dict, dataset: AbstractDataset, tokenizer: AbstractTokenizer
@@ -41,27 +182,17 @@ class TigerDiff(AbstractModel):
             tokenizer.max_token_seq_len, self.hidden_embd
         )
 
-        encoder_activation = self._encoder_activation(
-            self.config.get("activation_function", "gelu")
-        )
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.hidden_embd,
-            nhead=self.config["n_head"],
-            dim_feedforward=self.config["n_inner"],
-            dropout=self.config.get("embd_pdrop", 0.1),
-            activation=encoder_activation,
-            layer_norm_eps=self.config.get("layer_norm_epsilon", 1e-12),
-            batch_first=True,
-            norm_first=True,
-        )
-        self.encoder = nn.TransformerEncoder(
-            encoder_layer,
+        self.encoder = TigerSequenceEncoder(
+            hidden_size=self.hidden_embd,
             num_layers=self.config["n_layer"],
-            norm=nn.LayerNorm(
-                self.hidden_embd,
-                eps=self.config.get("layer_norm_epsilon", 1e-12),
+            num_heads=self.config["n_head"],
+            inner_size=self.config["n_inner"],
+            activation_name=self._encoder_activation(
+                self.config.get("activation_function", "gelu")
             ),
-            enable_nested_tensor=False,
+            attn_dropout=self.config.get("attn_pdrop", 0.1),
+            dropout=self.config.get("embd_pdrop", 0.1),
+            layer_norm_eps=self.config.get("layer_norm_epsilon", 1e-12),
         )
         self.condition_proj = nn.Sequential(
             nn.LayerNorm(self.hidden_embd, eps=1e-8),
@@ -139,7 +270,7 @@ class TigerDiff(AbstractModel):
         attention_mask = batch["attention_mask"].bool()
         encoded = self.encoder(
             input_embs,
-            src_key_padding_mask=~attention_mask,
+            attention_mask=attention_mask,
         )
 
         last_pos = (batch["seq_lens"] - 1).clamp_min(0)

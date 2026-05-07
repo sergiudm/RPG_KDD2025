@@ -102,22 +102,27 @@ class DiffARTokenizer(AbstractTokenizer):
                 "train_mask must have one entry for each non-padding item embedding."
             )
         if not np.any(train_mask):
-            raise ValueError("Cannot fit PCA because no training items were found.")
-
-        from sklearn.decomposition import PCA
-
-        n_components = self.config["sent_emb_pca"]
-        train_sent_embs = sent_embs[train_mask]
-        max_components = min(train_sent_embs.shape[0], train_sent_embs.shape[1])
-        if n_components > max_components:
             raise ValueError(
-                f"sent_emb_pca={n_components} exceeds the maximum PCA components "
-                f"available from training items ({max_components})."
+                "Cannot fit sentence embedding statistics because no training items were found."
             )
 
-        pca = PCA(n_components=n_components, whiten=True)
-        pca.fit(train_sent_embs)
-        sent_embs = pca.transform(sent_embs)
+        n_components = int(self.config.get("sent_emb_pca", 0))
+        if n_components < 0:
+            raise ValueError("sent_emb_pca must be non-negative.")
+        train_sent_embs = sent_embs[train_mask]
+        if n_components > 0:
+            from sklearn.decomposition import PCA
+
+            max_components = min(train_sent_embs.shape[0], train_sent_embs.shape[1])
+            if n_components > max_components:
+                raise ValueError(
+                    f"sent_emb_pca={n_components} exceeds the maximum PCA components "
+                    f"available from training items ({max_components})."
+                )
+
+            pca = PCA(n_components=n_components, whiten=True)
+            pca.fit(train_sent_embs)
+            sent_embs = pca.transform(sent_embs)
 
         train_sent_embs = sent_embs[train_mask]
         mean = np.mean(train_sent_embs, axis=0)
@@ -166,7 +171,10 @@ class DiffARTokenizer(AbstractTokenizer):
             sent_embs = self._encode_sent_emb(dataset, sent_emb_path)
 
         # PCA/statistics are fit on training items only to avoid val/test leakage.
-        self.log("[TOKENIZER] Applying PCA to sentence embeddings...")
+        if int(self.config.get("sent_emb_pca", 0)) > 0:
+            self.log("[TOKENIZER] Applying PCA to sentence embeddings...")
+        else:
+            self.log("[TOKENIZER] Skipping PCA for sentence embeddings...")
 
         train_mask = self._get_items_for_training(dataset)
         sent_embs = self._fit_transform_sentence_embeddings(sent_embs, train_mask)
