@@ -3,13 +3,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 python3 main.py \
     --model=TigerDiff \
     --dataset=AmazonReviews2014 \
-    --category="${CATEGORY:-Toys_and_Games}" \
-    --run_id=tigerdiff_toy \
+    --category=Beauty \
+    --run_id=tigerdiff_beauty \
     --lr=0.0005 \
     --weight_decay=0.01 \
     --train_batch_size=256 \
