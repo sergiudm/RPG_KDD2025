@@ -37,10 +37,12 @@ tiger_uncond_prob: 0.1
 # Paper-style classifier-free guidance weight w.
 # w=0 disables extra guidance; sampling passes cfg_scale=(1+w) to DiffLoss.
 tiger_guidance_weight: 2.0
+n_diffusion_samples: 16
+M: 16
 
 rank_loss_w: 0.1
 rank_temperature: 1.0
-rank_ensemble_w: 0.1
+rank_ensemble_w: 0.0
 
 # Rectified Flow configs
 use_rectified_flow: True

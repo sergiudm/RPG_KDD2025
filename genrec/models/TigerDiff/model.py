@@ -196,27 +196,17 @@ class TigerDiff(AbstractModel):
             nn.Linear(self.hidden_embd, self.hidden_embd),
         )
 
-        # Auxiliary ranking branch.
-        self.rank_condition_proj = nn.Sequential(
-            nn.LayerNorm(self.hidden_embd, eps=1e-8),
-            nn.Linear(self.hidden_embd, self.hidden_embd),
-        )
+        # Auxiliary ranking head: maps the sequence condition directly into
+        # the item sentence-embedding space and optimizes CE over all items.
         self.direct_proj = nn.Sequential(
             nn.LayerNorm(self.hidden_embd, eps=1e-8),
             nn.Linear(self.hidden_embd, self.feat_embd),
         )
-
-        # Full-item CE can easily dominate the diffusion/flow loss, especially
-        # when config.temperature is 0.07. Use a small default and a separate
-        # rank_temperature for training the auxiliary branch.
-        self.rank_loss_w = float(self.config.get("rank_loss_w", 0.02))
+        self.rank_loss_w = float(self.config.get("rank_loss_w", 0.2))
         if self.rank_loss_w < 0:
             raise ValueError("rank_loss_w must be non-negative.")
-        self.rank_temperature = float(self.config.get("rank_temperature", 1.0))
-        if self.rank_temperature <= 0:
-            raise ValueError("rank_temperature must be positive.")
 
-        # Optional inference-time ensemble with the direct ranking branch.
+        # Optional inference-time ensemble with the direct ranking head.
         # Keep default 0.0 to preserve the original diffusion-only generation
         # unless explicitly enabled in config.
         self.rank_ensemble_w = float(self.config.get("rank_ensemble_w", 0.0))
@@ -232,10 +222,6 @@ class TigerDiff(AbstractModel):
             raise ValueError(
                 "tiger_knn_metric must be one of: inner_product, cosine, l2."
             )
-
-        # Separate retrieval buffer: keep raw embeddings for history/diffusion
-        # targets, and use normalized embeddings only inside cosine scoring.
-        self.register_buffer("item_id2embs_score", self._map_item_score_embs())
 
         self.diffusion_batch_mul = int(self.config.get("diffusion_batch_mul", 1))
         self.diff_temperature = float(self.config.get("diff_temperature", 1.0))
@@ -274,15 +260,15 @@ class TigerDiff(AbstractModel):
 
     def _map_item_embs(self) -> torch.Tensor:
         sent_embs = torch.as_tensor(self.tokenizer.sent_embs, dtype=torch.float32)
+
+        # 3.A: If evaluation/retrieval uses cosine, train on the same space.
+        # This makes history inputs, diffusion targets, and KNN item embeddings
+        # all live on the unit hypersphere. The padding embedding remains zero.
+        if self.config.get("tiger_knn_metric", "inner_product") == "cosine":
+            sent_embs = F.normalize(sent_embs, p=2, dim=-1)
+
         pad_embs = torch.zeros((1, sent_embs.shape[1]), dtype=torch.float32)
         return torch.cat([pad_embs, sent_embs], dim=0)
-
-    def _map_item_score_embs(self) -> torch.Tensor:
-        # Non-padding item embeddings used only for retrieval/ranking logits.
-        item_embs = self.item_id2embs[1:].clone()
-        if self.knn_metric == "cosine":
-            item_embs = F.normalize(item_embs, p=2, dim=-1)
-        return item_embs
 
     @property
     def n_parameters(self) -> str:
@@ -310,13 +296,12 @@ class TigerDiff(AbstractModel):
             attention_mask=attention_mask,
         )
         last_pos = (batch["seq_lens"] - 1).clamp_min(0)
-        last_hidden = encoded.gather(
+        condition = encoded.gather(
             dim=1,
             index=last_pos.view(-1, 1, 1).expand(-1, 1, self.hidden_embd),
         ).squeeze(1)
-        condition = self.condition_proj(last_hidden)
-        rank_condition = self.rank_condition_proj(last_hidden)
-        return encoded, condition, rank_condition
+        condition = self.condition_proj(condition)
+        return encoded, condition
 
     def _last_valid_labels(self, labels: torch.Tensor):
         if labels.dim() == 1:
@@ -334,39 +319,24 @@ class TigerDiff(AbstractModel):
         return target_ids, valid_rows
 
     def _item_similarity_logits(self, pred_embs: torch.Tensor) -> torch.Tensor:
-        if self.knn_metric == "cosine":
-            pred_embs = F.normalize(pred_embs, p=2, dim=-1)
-            return torch.matmul(pred_embs, self.item_id2embs_score.T) / self.temperature
-
         item_embs = self.item_id2embs[1:]
+
+        if self.knn_metric == "cosine":
+            item_embs = F.normalize(item_embs, p=2, dim=-1)
+            pred_embs = F.normalize(pred_embs, p=2, dim=-1)
+            return torch.matmul(pred_embs, item_embs.T) / self.temperature
+
         if self.knn_metric == "l2":
             return -torch.cdist(pred_embs, item_embs, p=2)
 
         return torch.matmul(pred_embs, item_embs.T) / self.temperature
 
-    def _rank_similarity_logits(self, pred_embs: torch.Tensor) -> torch.Tensor:
-        # Training-only logits for the auxiliary CE branch. Use a separate
-        # temperature so gradients are not amplified by the eval temperature.
-        if self.knn_metric == "cosine":
-            pred_embs = F.normalize(pred_embs, p=2, dim=-1)
-            return (
-                torch.matmul(pred_embs, self.item_id2embs_score.T)
-                / self.rank_temperature
-            )
-
-        item_embs = self.item_id2embs[1:]
-        if self.knn_metric == "l2":
-            return -torch.cdist(pred_embs, item_embs, p=2)
-
-        return torch.matmul(pred_embs, item_embs.T) / self.rank_temperature
-
     def forward(self, batch: dict, return_loss=True) -> torch.Tensor:
-        encoded, condition, rank_condition = self._encode_history(batch)
+        encoded, condition = self._encode_history(batch)
 
         outputs = SimpleNamespace()
         outputs.last_hidden_state = encoded
         outputs.final_states = condition
-        outputs.rank_states = rank_condition
 
         if not return_loss:
             return outputs
@@ -381,15 +351,14 @@ class TigerDiff(AbstractModel):
             return outputs
 
         z_cond = condition[valid_rows]
-        rank_cond = rank_condition[valid_rows]
         target_item_ids = target_ids[valid_rows].long()
         target = self.item_id2embs[target_item_ids]
 
         # 2: direct full-item ranking auxiliary loss.
         # target_item_ids are 1-based item ids; CE targets are 0-based indices
         # over self.item_id2embs[1:].
-        rank_embs = self.direct_proj(rank_cond)
-        rank_logits = self._rank_similarity_logits(rank_embs)
+        rank_embs = self.direct_proj(z_cond)
+        rank_logits = self._item_similarity_logits(rank_embs)
         rank_targets = target_item_ids - 1
         rank_loss = F.cross_entropy(rank_logits, rank_targets)
 
@@ -414,31 +383,65 @@ class TigerDiff(AbstractModel):
     def generate(self, batch, n_return_sequences=1):
         outputs = self.forward(batch, return_loss=False)
         condition = outputs.final_states
+        batch_size = condition.shape[0]
 
-        sample_condition = condition
-        if self.cfg_scale != 1.0:
-            sample_condition = torch.cat(
-                [
-                    condition,
-                    self.uncond_condition.to(dtype=condition.dtype)
-                    .view(1, -1)
-                    .expand_as(condition),
-                ],
-                dim=0,
-            )
-
-        generated_embs = self.diffloss.sample(
-            sample_condition,
-            temperature=self.diff_temperature,
-            cfg=self.cfg_scale,
+        # Multi-sample diffusion at inference.
+        # If config has M > 0, sample M embeddings for each user in parallel,
+        # convert each sample to full item logits, then aggregate with logsumexp.
+        # If M is missing or <= 0, keep the original single-sample behavior.
+        num_samples = int(
+            self.config.get("M", self.config.get("n_diffusion_samples", 16))
         )
-        generated_embs = generated_embs[: condition.shape[0]]
 
-        item_logits = self._item_similarity_logits(generated_embs)
+        if num_samples > 0:
+            repeated_condition = condition.repeat_interleave(num_samples, dim=0)
+
+            sample_condition = repeated_condition
+            if self.cfg_scale != 1.0:
+                sample_condition = torch.cat(
+                    [
+                        repeated_condition,
+                        self.uncond_condition.to(dtype=condition.dtype)
+                        .view(1, -1)
+                        .expand_as(repeated_condition),
+                    ],
+                    dim=0,
+                )
+
+            generated_embs = self.diffloss.sample(
+                sample_condition,
+                temperature=self.diff_temperature,
+                cfg=self.cfg_scale,
+            )
+            generated_embs = generated_embs[: repeated_condition.shape[0]]
+
+            sample_logits = self._item_similarity_logits(generated_embs)
+            sample_logits = sample_logits.view(batch_size, num_samples, -1)
+            item_logits = torch.logsumexp(sample_logits, dim=1)
+        else:
+            sample_condition = condition
+            if self.cfg_scale != 1.0:
+                sample_condition = torch.cat(
+                    [
+                        condition,
+                        self.uncond_condition.to(dtype=condition.dtype)
+                        .view(1, -1)
+                        .expand_as(condition),
+                    ],
+                    dim=0,
+                )
+
+            generated_embs = self.diffloss.sample(
+                sample_condition,
+                temperature=self.diff_temperature,
+                cfg=self.cfg_scale,
+            )
+            generated_embs = generated_embs[:batch_size]
+            item_logits = self._item_similarity_logits(generated_embs)
 
         # Optional direct-head ensemble at inference.
         if self.rank_ensemble_w > 0.0:
-            direct_embs = self.direct_proj(outputs.rank_states)
+            direct_embs = self.direct_proj(condition)
             direct_logits = self._item_similarity_logits(direct_embs)
             item_logits = item_logits + self.rank_ensemble_w * direct_logits
 
