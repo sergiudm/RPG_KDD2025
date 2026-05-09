@@ -1,6 +1,5 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
-
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
@@ -59,6 +58,7 @@ class TigerSelfAttention(nn.Module):
         self, hidden_states: torch.Tensor, attention_mask: torch.Tensor
     ) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.shape
+
         qkv = self.qkv(hidden_states)
         qkv = qkv.view(
             batch_size,
@@ -174,14 +174,11 @@ class TigerDiff(AbstractModel):
         super(TigerDiff, self).__init__(config, dataset, tokenizer)
 
         self.register_buffer("item_id2embs", self._map_item_embs())
-
         self.feat_embd = self.item_id2embs.shape[1]
         self.hidden_embd = self.config["n_embd"]
-        self.input_proj = InputProj(self.feat_embd, self.hidden_embd)
-        self.position_emb = nn.Embedding(
-            tokenizer.max_token_seq_len, self.hidden_embd
-        )
 
+        self.input_proj = InputProj(self.feat_embd, self.hidden_embd)
+        self.position_emb = nn.Embedding(tokenizer.max_token_seq_len, self.hidden_embd)
         self.encoder = TigerSequenceEncoder(
             hidden_size=self.hidden_embd,
             num_layers=self.config["n_layer"],
@@ -199,6 +196,33 @@ class TigerDiff(AbstractModel):
             nn.Linear(self.hidden_embd, self.hidden_embd),
         )
 
+        # Auxiliary ranking branch.
+        self.rank_condition_proj = nn.Sequential(
+            nn.LayerNorm(self.hidden_embd, eps=1e-8),
+            nn.Linear(self.hidden_embd, self.hidden_embd),
+        )
+        self.direct_proj = nn.Sequential(
+            nn.LayerNorm(self.hidden_embd, eps=1e-8),
+            nn.Linear(self.hidden_embd, self.feat_embd),
+        )
+
+        # Full-item CE can easily dominate the diffusion/flow loss, especially
+        # when config.temperature is 0.07. Use a small default and a separate
+        # rank_temperature for training the auxiliary branch.
+        self.rank_loss_w = float(self.config.get("rank_loss_w", 0.02))
+        if self.rank_loss_w < 0:
+            raise ValueError("rank_loss_w must be non-negative.")
+        self.rank_temperature = float(self.config.get("rank_temperature", 1.0))
+        if self.rank_temperature <= 0:
+            raise ValueError("rank_temperature must be positive.")
+
+        # Optional inference-time ensemble with the direct ranking branch.
+        # Keep default 0.0 to preserve the original diffusion-only generation
+        # unless explicitly enabled in config.
+        self.rank_ensemble_w = float(self.config.get("rank_ensemble_w", 0.0))
+        if self.rank_ensemble_w < 0:
+            raise ValueError("rank_ensemble_w must be non-negative.")
+
         self.temperature = float(self.config.get("temperature", 1.0))
         if self.temperature <= 0:
             raise ValueError("temperature must be positive.")
@@ -209,14 +233,20 @@ class TigerDiff(AbstractModel):
                 "tiger_knn_metric must be one of: inner_product, cosine, l2."
             )
 
+        # Separate retrieval buffer: keep raw embeddings for history/diffusion
+        # targets, and use normalized embeddings only inside cosine scoring.
+        self.register_buffer("item_id2embs_score", self._map_item_score_embs())
+
         self.diffusion_batch_mul = int(self.config.get("diffusion_batch_mul", 1))
         self.diff_temperature = float(self.config.get("diff_temperature", 1.0))
+
         guidance_weight = self.config.get(
             "tiger_guidance_weight",
             self.config.get("tiger_guidance_strength", 0.0),
         )
         self.guidance_weight = float(guidance_weight)
         self.cfg_scale = 1.0 + self.guidance_weight
+
         self.uncond_prob = float(self.config.get("tiger_uncond_prob", 0.1))
         if not 0.0 <= self.uncond_prob <= 1.0:
             raise ValueError("tiger_uncond_prob must be in [0, 1].")
@@ -247,6 +277,13 @@ class TigerDiff(AbstractModel):
         pad_embs = torch.zeros((1, sent_embs.shape[1]), dtype=torch.float32)
         return torch.cat([pad_embs, sent_embs], dim=0)
 
+    def _map_item_score_embs(self) -> torch.Tensor:
+        # Non-padding item embeddings used only for retrieval/ranking logits.
+        item_embs = self.item_id2embs[1:].clone()
+        if self.knn_metric == "cosine":
+            item_embs = F.normalize(item_embs, p=2, dim=-1)
+        return item_embs
+
     @property
     def n_parameters(self) -> str:
         total_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -272,58 +309,91 @@ class TigerDiff(AbstractModel):
             input_embs,
             attention_mask=attention_mask,
         )
-
         last_pos = (batch["seq_lens"] - 1).clamp_min(0)
-        condition = encoded.gather(
+        last_hidden = encoded.gather(
             dim=1,
             index=last_pos.view(-1, 1, 1).expand(-1, 1, self.hidden_embd),
         ).squeeze(1)
-        condition = self.condition_proj(condition)
-        return encoded, condition
+        condition = self.condition_proj(last_hidden)
+        rank_condition = self.rank_condition_proj(last_hidden)
+        return encoded, condition, rank_condition
 
     def _last_valid_labels(self, labels: torch.Tensor):
         if labels.dim() == 1:
             labels = labels.unsqueeze(-1)
-
         label_mask = labels != self.tokenizer.ignored_label
         positions = torch.arange(labels.shape[1], device=labels.device).view(1, -1)
         last_positions = torch.where(label_mask, positions, -1).max(dim=1).values
         valid_rows = last_positions >= 0
-
-        target_ids = torch.zeros(labels.shape[0], device=labels.device, dtype=torch.long)
+        target_ids = torch.zeros(
+            labels.shape[0], device=labels.device, dtype=torch.long
+        )
         if valid_rows.any():
             row_ids = valid_rows.nonzero(as_tuple=True)[0]
             target_ids[row_ids] = labels[row_ids, last_positions[valid_rows]].long()
         return target_ids, valid_rows
 
     def _item_similarity_logits(self, pred_embs: torch.Tensor) -> torch.Tensor:
-        item_embs = self.item_id2embs[1:]
         if self.knn_metric == "cosine":
-            item_embs = F.normalize(item_embs, p=2, dim=-1)
             pred_embs = F.normalize(pred_embs, p=2, dim=-1)
-            return torch.matmul(pred_embs, item_embs.T) / self.temperature
+            return torch.matmul(pred_embs, self.item_id2embs_score.T) / self.temperature
+
+        item_embs = self.item_id2embs[1:]
         if self.knn_metric == "l2":
             return -torch.cdist(pred_embs, item_embs, p=2)
+
         return torch.matmul(pred_embs, item_embs.T) / self.temperature
 
+    def _rank_similarity_logits(self, pred_embs: torch.Tensor) -> torch.Tensor:
+        # Training-only logits for the auxiliary CE branch. Use a separate
+        # temperature so gradients are not amplified by the eval temperature.
+        if self.knn_metric == "cosine":
+            pred_embs = F.normalize(pred_embs, p=2, dim=-1)
+            return (
+                torch.matmul(pred_embs, self.item_id2embs_score.T)
+                / self.rank_temperature
+            )
+
+        item_embs = self.item_id2embs[1:]
+        if self.knn_metric == "l2":
+            return -torch.cdist(pred_embs, item_embs, p=2)
+
+        return torch.matmul(pred_embs, item_embs.T) / self.rank_temperature
+
     def forward(self, batch: dict, return_loss=True) -> torch.Tensor:
-        encoded, condition = self._encode_history(batch)
+        encoded, condition, rank_condition = self._encode_history(batch)
+
         outputs = SimpleNamespace()
         outputs.last_hidden_state = encoded
         outputs.final_states = condition
+        outputs.rank_states = rank_condition
 
         if not return_loss:
             return outputs
 
         assert "labels" in batch, "The batch must contain the labels."
         target_ids, valid_rows = self._last_valid_labels(batch["labels"])
+
         if not valid_rows.any():
             outputs.loss = condition.sum() * 0.0
+            outputs.diff_loss = outputs.loss
+            outputs.rank_loss = outputs.loss
             return outputs
 
-        z = condition[valid_rows]
-        target = self.item_id2embs[target_ids[valid_rows]]
+        z_cond = condition[valid_rows]
+        rank_cond = rank_condition[valid_rows]
+        target_item_ids = target_ids[valid_rows].long()
+        target = self.item_id2embs[target_item_ids]
 
+        # 2: direct full-item ranking auxiliary loss.
+        # target_item_ids are 1-based item ids; CE targets are 0-based indices
+        # over self.item_id2embs[1:].
+        rank_embs = self.direct_proj(rank_cond)
+        rank_logits = self._rank_similarity_logits(rank_embs)
+        rank_targets = target_item_ids - 1
+        rank_loss = F.cross_entropy(rank_logits, rank_targets)
+
+        z = z_cond
         if self.training and self.uncond_prob > 0.0:
             uncond_mask = torch.rand(z.shape[0], device=z.device) < self.uncond_prob
             if uncond_mask.any():
@@ -334,13 +404,17 @@ class TigerDiff(AbstractModel):
             z = z.repeat(self.diffusion_batch_mul, 1)
             target = target.repeat(self.diffusion_batch_mul, 1)
 
-        outputs.loss = self.diffloss(z=z, target=target)
-        outputs.diff_loss = outputs.loss
+        diff_loss = self.diffloss(z=z, target=target)
+
+        outputs.diff_loss = diff_loss
+        outputs.rank_loss = rank_loss
+        outputs.loss = diff_loss + self.rank_loss_w * rank_loss
         return outputs
 
     def generate(self, batch, n_return_sequences=1):
         outputs = self.forward(batch, return_loss=False)
         condition = outputs.final_states
+
         sample_condition = condition
         if self.cfg_scale != 1.0:
             sample_condition = torch.cat(
@@ -352,12 +426,21 @@ class TigerDiff(AbstractModel):
                 ],
                 dim=0,
             )
+
         generated_embs = self.diffloss.sample(
             sample_condition,
             temperature=self.diff_temperature,
             cfg=self.cfg_scale,
         )
         generated_embs = generated_embs[: condition.shape[0]]
+
         item_logits = self._item_similarity_logits(generated_embs)
+
+        # Optional direct-head ensemble at inference.
+        if self.rank_ensemble_w > 0.0:
+            direct_embs = self.direct_proj(outputs.rank_states)
+            direct_logits = self._item_similarity_logits(direct_embs)
+            item_logits = item_logits + self.rank_ensemble_w * direct_logits
+
         preds = item_logits.topk(n_return_sequences, dim=-1).indices + 1
         return preds.unsqueeze(-1)

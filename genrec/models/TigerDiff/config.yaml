@@ -23,7 +23,6 @@ initializer_range: 0.02
 weight_decay: 0.01
 
 # KNN scoring over generated oracle item embeddings.
-# DreamRec reports inner-product KNN at evaluation time.
 temperature: 0.07
 tiger_knn_metric: cosine
 
@@ -38,6 +37,10 @@ tiger_uncond_prob: 0.1
 # Paper-style classifier-free guidance weight w.
 # w=0 disables extra guidance; sampling passes cfg_scale=(1+w) to DiffLoss.
 tiger_guidance_weight: 2.0
+
+rank_loss_w: 0.2
+rank_temperature: 1.0
+rank_ensemble_w: 0.0
 
 # Rectified Flow configs
 use_rectified_flow: True

@@ -794,8 +794,8 @@ if __name__ == "__main__":
             # # "logs/AmazonReviews2014/RPG/genrec_default-main.py_--category=CDs_and_Vinyl_--lr=0.001_--temperature=0.03_--n_codebook=64_--num_beams=20_--n_edges=500_--propagation_steps=5-May-06-2026_01-21-70824e.log",
             # "logs/AmazonReviews2014/RPG/genrec_default-main.py_--category=Sports_and_Outdoors_--lr=0.003_--temperature=0.03_--n_codebook=16_--num_beams=100_--n_edges=30_--propagation_steps=5-May-06-2026_01-21-52057a.log",
             # "logs/AmazonReviews2014/RPG/genrec_default-main.py_--category=Toys_and_Games_--lr=0.003_--temperature=0.03_--n_codebook=16_--num_beams=200_--n_edges=20_--propagation_steps=3-May-06-2026_01-22-2b595c.log",
-            # "logs/AmazonReviews2014/RPGDiff"
-            "logs/AmazonReviews2014/paper"
+            "logs/AmazonReviews2014/TigerDiff"
+            # "logs/AmazonReviews2014/paper"
         ],
         help="List of full paths to the log files (or directories)",
     )
